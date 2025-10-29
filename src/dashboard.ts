@@ -1,10 +1,17 @@
 import { PlaybackEngine } from './playback';
 import type { Program, Bumper, Logo } from './types';
+import { Exporter } from './export';
+import { Importer } from './import';
+
 
 let playbackEngine: PlaybackEngine;
+let exporter: Exporter;
+let importer: Importer;
 
 export function setPlaybackEngine(engine: PlaybackEngine) {
   playbackEngine = engine;
+  exporter = new Exporter([], [], [], new Map()); // Will be updated when media is added
+  importer = new Importer(engine);
 }
 
 export function createDashboard() {
@@ -42,41 +49,60 @@ export function createDashboard() {
         <input type="file" id="logo-input" accept="image/*">
         <button type="button" id="add-logo-btn">Add Logo</button>
       </div>
-      <button type="button" id="save-btn">Save</button>
+      <div>
+        <label>Import Project:</label>
+        <input type="file" id="import-input" multiple accept=".json,.mp4,.mov,.avi,.jpg,.png,.mp3,.wav">
+        <button type="button" id="import-btn">Import</button>
+      </div>
+      <button type="button" id="save-btn">Save Project</button>
     </form>
-    <div>
-      <label><input type="checkbox" id="show-programs"> Show Programs List</label>
-      <label><input type="checkbox" id="show-bumpers"> Show Bumpers List</label>
-      <label><input type="checkbox" id="show-logos"> Show Logos List</label>
+    <div style="margin-top: 10px; font-size: 12px; opacity: 0.7;">
+      <div>Press Q to hide/show controls</div>
+      <div>Press R to start playback</div>
+      <div>Press S to skip</div>
+      <div>Press D to seek 10 seconds ahead</div>
     </div>
   `;
 
-  // Create floating list windows
+  // Remove the checkboxes section entirely and add the help text instead
+
+  // Create floating list windows (initially hidden)
   const programsList = createListWindow('programs-list', 'Programs List', 'top: 150px; right: 50px;');
   const bumpersList = createListWindow('bumpers-list', 'Bumpers List', 'top: 150px; right: 300px;');
   const logosList = createListWindow('logos-list', 'Logos List', 'top: 150px; right: 550px;');
+
+  // Hide list windows initially
+  programsList.style.display = 'none';
+  bumpersList.style.display = 'none';
+  logosList.style.display = 'none';
 
   document.body.appendChild(programsList);
   document.body.appendChild(bumpersList);
   document.body.appendChild(logosList);
 
-  // Toggle list windows
-  dashboard.querySelector('#show-programs')?.addEventListener('change', (e) => {
-    programsList.style.display = (e.target as HTMLInputElement).checked ? 'block' : 'none';
-  });
-
-  dashboard.querySelector('#show-bumpers')?.addEventListener('change', (e) => {
-    bumpersList.style.display = (e.target as HTMLInputElement).checked ? 'block' : 'none';
-  });
-
-  dashboard.querySelector('#show-logos')?.addEventListener('change', (e) => {
-    logosList.style.display = (e.target as HTMLInputElement).checked ? 'block' : 'none';
-  });
-
   // Add button event listeners
   dashboard.querySelector('#add-program-btn')?.addEventListener('click', () => addProgram(playbackEngine));
   dashboard.querySelector('#add-bumper-btn')?.addEventListener('click', () => addBumper(playbackEngine));
   dashboard.querySelector('#add-logo-btn')?.addEventListener('click', () => addLogo(playbackEngine));
+
+  // Add save button listener
+  dashboard.querySelector('#save-btn')?.addEventListener('click', () => {
+    // Update exporter with current data
+    exporter = new Exporter(
+        playbackEngine.getPrograms(),
+        playbackEngine.getBumpers(), 
+        playbackEngine.getLogos(),
+        playbackEngine.getPositions()
+    );
+    exporter.exportAll();
+  });
+  // Add import button listener
+  dashboard.querySelector('#import-btn')?.addEventListener('click', () => {
+    const input = document.getElementById('import-input') as HTMLInputElement;
+    if (input.files) {
+      importer.importFiles(Array.from(input.files));
+    }
+  });
 
   // Make draggable
   let isDragging = false;
@@ -99,6 +125,13 @@ export function createDashboard() {
     isDragging = false;
     dashboard.style.cursor = 'move';
   });
+
+  // Store reference to toggle function
+  (dashboard as any).toggleLists = (show: boolean) => {
+    programsList.style.display = show ? 'block' : 'none';
+    bumpersList.style.display = show ? 'block' : 'none';
+    logosList.style.display = show ? 'block' : 'none';
+  };
 
   return dashboard;
 }
@@ -135,12 +168,37 @@ function addProgram(playbackEngine: PlaybackEngine) {
       videoFile: input.files[0]
     };
     
-    programItem.textContent = `${programId}: ${input.files[0].name}`;
-    programItem.style.cursor = 'pointer';
-    programItem.style.padding = '5px';
-    programItem.style.margin = '2px 0';
-    programItem.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
-    programItem.style.borderRadius = '3px';
+    programItem.innerHTML = `
+      <span>${programId}: ${input.files[0].name}</span>
+      <button class="delete-btn">×</button>
+    `;
+    programItem.style.cssText = `
+      cursor: pointer;
+      padding: 5px;
+      margin: 2px 0;
+      background-color: rgba(255, 255, 255, 0.1);
+      border-radius: 3px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    `;
+    
+    const deleteBtn = programItem.querySelector('.delete-btn') as HTMLButtonElement;
+    deleteBtn.style.cssText = `
+      background: red;
+      border: none;
+      color: white;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+    `;
+    
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      programsList.removeChild(programItem);
+      // Remove from playback engine (we'll need to add this method)
+    });
     
     programItem.addEventListener('click', () => {
       // Force play this program
@@ -169,12 +227,37 @@ function addBumper(playbackEngine: PlaybackEngine) {
     };
     
     const audioText = bumper.audioFile ? ` + Audio` : '';
-    bumperItem.textContent = `${bumperId}: ${videoInput.files[0].name}${audioText}`;
-    bumperItem.style.cursor = 'pointer';
-    bumperItem.style.padding = '5px';
-    bumperItem.style.margin = '2px 0';
-    bumperItem.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
-    bumperItem.style.borderRadius = '3px';
+    bumperItem.innerHTML = `
+      <span>${bumperId}: ${videoInput.files[0].name}${audioText}</span>
+      <button class="delete-btn">×</button>
+    `;
+    bumperItem.style.cssText = `
+      cursor: pointer;
+      padding: 5px;
+      margin: 2px 0;
+      background-color: rgba(255, 255, 255, 0.1);
+      border-radius: 3px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    `;
+    
+    const deleteBtn = bumperItem.querySelector('.delete-btn') as HTMLButtonElement;
+    deleteBtn.style.cssText = `
+      background: red;
+      border: none;
+      color: white;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+    `;
+    
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      bumpersList.removeChild(bumperItem);
+      // Remove from playback engine
+    });
     
     bumperItem.addEventListener('click', () => {
       // Force play this bumper
@@ -200,12 +283,37 @@ function addLogo(playbackEngine: PlaybackEngine) {
       imageFile: input.files[0]
     };
     
-    logoItem.textContent = `${logoId}: ${input.files[0].name}`;
-    logoItem.style.cursor = 'pointer';
-    logoItem.style.padding = '5px';
-    logoItem.style.margin = '2px 0';
-    logoItem.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
-    logoItem.style.borderRadius = '3px';
+    logoItem.innerHTML = `
+      <span>${logoId}: ${input.files[0].name}</span>
+      <button class="delete-btn">×</button>
+    `;
+    logoItem.style.cssText = `
+      cursor: pointer;
+      padding: 5px;
+      margin: 2px 0;
+      background-color: rgba(255, 255, 255, 0.1);
+      border-radius: 3px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    `;
+    
+    const deleteBtn = logoItem.querySelector('.delete-btn') as HTMLButtonElement;
+    deleteBtn.style.cssText = `
+      background: red;
+      border: none;
+      color: white;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+    `;
+    
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      logosList.removeChild(logoItem);
+      // Remove from playback engine
+    });
     
     logosList.appendChild(logoItem);
     playbackEngine.addLogo(logo);

@@ -11,6 +11,10 @@ export class PlaybackEngine {
   private videoElement: HTMLVideoElement;
   private currentCyclePromise: Promise<void> | null = null;
   private audioElement: HTMLAudioElement;
+  private currentProgram: Program | undefined;
+
+  private scale = 1;
+  private positions = new Map<string, { x: number; y: number; scale: number }>();
 
   constructor(videoElement: HTMLVideoElement) {
     this.videoElement = videoElement;
@@ -18,6 +22,22 @@ export class PlaybackEngine {
     
     // Set video to fit instead of cover
     this.videoElement.style.objectFit = 'contain';
+    this.setupScale(); // Initialize scale only
+  }
+
+  clearAll() {
+    this.programs = [];
+    this.bumpers = [];
+    this.logos = [];
+    this.currentProgramsDeck = [];
+    this.currentBumpersDeck = [];
+    this.currentLogosDeck = [];
+    this.positions.clear();
+    this.stopPlayback();
+  }
+
+  setProgramPosition(programId: string, position: { x: number; y: number; scale: number }) {
+    this.positions.set(programId, position);
   }
 
   startPlayback() {
@@ -142,6 +162,25 @@ export class PlaybackEngine {
 
   private async playProgram(program: Program): Promise<void> {
     return new Promise((resolve) => {
+      this.currentProgram = program;
+      
+      // Apply saved scale for this specific program
+      const savedPosition = this.positions.get(program.id);
+      if (savedPosition) {
+        this.scale = savedPosition.scale;
+        this.videoElement.style.transform = `translate(-50%, -50%) scale(${this.scale})`;
+      } else {
+        // Reset to default scale for new programs
+        this.scale = 1;
+        this.videoElement.style.transform = 'translate(-50%, -50%) scale(1)';
+        // Save default position for this program
+        this.positions.set(program.id, { x: 0, y: 0, scale: 1 });
+      }
+      
+      // Always center the video
+      this.videoElement.style.left = '50%';
+      this.videoElement.style.top = '50%';
+      
       this.videoElement.style.display = 'block';
       this.videoElement.style.opacity = '1';
       this.videoElement.src = URL.createObjectURL(program.videoFile);
@@ -153,6 +192,7 @@ export class PlaybackEngine {
         
         setTimeout(() => {
           this.videoElement.style.transition = '';
+          this.currentProgram = undefined;
           resolve();
         }, 1000);
       };
@@ -163,6 +203,9 @@ export class PlaybackEngine {
 
   private async playBumper(bumper: Bumper): Promise<void> {
     return new Promise((resolve) => {
+      // Reset to default scale for bumpers
+      this.videoElement.style.transform = 'translate(-50%, -50%) scale(1)';
+      
       this.videoElement.style.display = 'block';
       this.videoElement.style.opacity = '0'; // Start faded in
       this.videoElement.src = URL.createObjectURL(bumper.videoFile);
@@ -285,6 +328,10 @@ export class PlaybackEngine {
   // Methods to add media to decks
   addProgram(program: Program) {
     this.programs.push(program);
+    // Initialize default position if not exists
+    if (!this.positions.has(program.id)) {
+      this.positions.set(program.id, { x: 0, y: 0, scale: 1 });
+    }
   }
 
   addBumper(bumper: Bumper) {
@@ -293,5 +340,109 @@ export class PlaybackEngine {
 
   addLogo(logo: Logo) {
     this.logos.push(logo);
+  }
+
+  private setupScale() {
+    this.videoElement.style.position = 'fixed';
+    this.videoElement.style.top = '50%';
+    this.videoElement.style.left = '50%';
+    this.videoElement.style.transform = 'translate(-50%, -50%)';
+    this.videoElement.style.cursor = 'default';
+    this.videoElement.style.transformOrigin = 'center center';
+
+    this.videoElement.addEventListener('wheel', this.handleWheel.bind(this));
+  }
+
+  private handleWheel(e: WheelEvent) {
+    e.preventDefault();
+    
+    const delta = e.deltaY > 0 ? -0.1 : 0.1;
+    const newScale = Math.max(0.1, Math.min(3, this.scale + delta));
+    
+    this.scale = newScale;
+    
+    // Apply transform with center scaling
+    this.videoElement.style.transform = `translate(-50%, -50%) scale(${this.scale})`;
+    
+    // Save scale for current program
+    this.saveCurrentPosition();
+  }
+
+  private saveCurrentPosition() {
+    const currentProgram = this.getCurrentProgram();
+    
+    if (currentProgram) {
+      this.positions.set(currentProgram.id, {
+        x: 0, // No longer tracking position, just scale
+        y: 0,
+        scale: this.scale
+      });
+    }
+  }
+
+  getExportData() {
+    return {
+      programs: this.programs,
+      bumpers: this.bumpers,
+      logos: this.logos,
+      positions: Object.fromEntries(this.positions) // Convert Map to object for JSON
+    };
+  }
+
+  private getCurrentProgram(): Program | undefined {
+    return this.currentProgram;
+  }
+
+  getPrograms(): Program[] {
+    return this.programs;
+  }
+
+  getBumpers(): Bumper[] {
+    return this.bumpers;
+  }
+
+  getLogos(): Logo[] {
+    return this.logos;
+  }
+
+  getPositions(): Map<string, { x: number; y: number; scale: number }> {
+    return this.positions;
+  }
+
+  togglePause() {
+    if (this.videoElement.paused && this.videoElement.src) {
+      this.videoElement.play().catch(console.error);
+    } else if (!this.videoElement.paused) {
+      this.videoElement.pause();
+    }
+    
+    // Also pause/resume bumper audio if playing
+    if (!this.audioElement.paused && this.audioElement.src) {
+      this.audioElement.pause();
+    } else if (this.audioElement.paused && this.audioElement.src) {
+      this.audioElement.play().catch(console.error);
+    }
+  }
+
+  skipToNextProgram() {
+    if (!this.isPlaying) return;
+    
+    // If we're in the middle of a cycle, skip to the next one
+    if (this.currentCyclePromise) {
+      // This will trigger the current program to end and move to the next cycle
+      this.videoElement.currentTime = this.videoElement.duration;
+    }
+  }
+
+  jumpForward(seconds: number) {
+    if (!this.videoElement.src || this.videoElement.paused) return;
+    
+    const newTime = this.videoElement.currentTime + seconds;
+    this.videoElement.currentTime = Math.min(newTime, this.videoElement.duration);
+    
+    // If we're at the end, skip to next program
+    if (this.videoElement.currentTime >= this.videoElement.duration) {
+      this.skipToNextProgram();
+    }
   }
 }
