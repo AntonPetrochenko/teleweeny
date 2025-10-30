@@ -13,9 +13,8 @@ export class PlaybackEngine {
   private currentBumperAudiosDeck: BumperAudio[] = [];
   private audioElement: HTMLAudioElement;
   private currentProgram: Program | undefined;
-  private autoRestart = false; // Add auto restart flag
+  private autoRestart = false;
   private bumperAudios: BumperAudio[] = [];
-
 
   private scale = 1;
   private positions = new Map<string, { x: number; y: number; scale: number }>();
@@ -24,9 +23,31 @@ export class PlaybackEngine {
     this.videoElement = videoElement;
     this.audioElement = new Audio();
     
-    // Set video to fit instead of cover
     this.videoElement.style.objectFit = 'contain';
-    this.setupScale(); // Initialize scale only
+    this.setupScale();
+    
+    // Add error event listeners
+    this.videoElement.addEventListener('error', this.handleVideoError.bind(this));
+    this.audioElement.addEventListener('error', this.handleAudioError.bind(this));
+  }
+
+  private handleVideoError() {
+    console.error('Video element error:', this.videoElement.error);
+    this.skipCurrentMedia();
+  }
+
+  private handleAudioError() {
+    console.error('Audio element error:', this.audioElement.error);
+    this.skipCurrentMedia();
+  }
+
+  private skipCurrentMedia() {
+    // If we're playing and an error occurs, skip to the next item
+    if (this.isPlaying) {
+      this.videoElement.pause();
+      this.audioElement.pause();
+      // The current promise will reject and the cycle will continue with next item
+    }
   }
 
   setProgramPosition(programId: string, position: { x: number; y: number; scale: number }) {
@@ -74,10 +95,8 @@ export class PlaybackEngine {
     this.currentCyclePromise = this.executeCycle();
     await this.currentCyclePromise;
     
-    // Continue cycle if we still have programs OR if auto-restart is enabled
     if (this.isPlaying && (this.currentProgramsDeck.length > 0 || this.autoRestart)) {
       if (this.currentProgramsDeck.length === 0 && this.autoRestart) {
-        // Reshuffle programs deck for auto-restart
         this.currentProgramsDeck = [...this.programs];
       }
       this.playNextCycle();
@@ -85,10 +104,8 @@ export class PlaybackEngine {
   }
 
   private showDoneScreen() {
-    // Hide video element
     this.videoElement.style.display = 'none';
     
-    // Create done screen image
     const doneImg = document.createElement('img');
     doneImg.src = 'done.png';
     doneImg.style.position = 'fixed';
@@ -103,32 +120,35 @@ export class PlaybackEngine {
   }
 
   private async playProgram(program: Program): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       this.currentProgram = program;
       
-      // Apply saved scale for this specific program
       const savedPosition = this.positions.get(program.id);
       if (savedPosition) {
         this.scale = savedPosition.scale;
         this.videoElement.style.transform = `translate(-50%, -50%) scale(${this.scale})`;
       } else {
-        // Reset to default scale for new programs
         this.scale = 1;
         this.videoElement.style.transform = 'translate(-50%, -50%) scale(1)';
-        // Save default position for this program
         this.positions.set(program.id, { x: 0, y: 0, scale: 1 });
       }
       
-      // Always center the video
       this.videoElement.style.left = '50%';
       this.videoElement.style.top = '50%';
-      
       this.videoElement.style.display = 'block';
       this.videoElement.style.opacity = '1';
-      this.videoElement.src = URL.createObjectURL(program.videoFile);
       
-      this.videoElement.onended = () => {
-        // Fade out program before resolving
+      // Add error handling for program loading
+      const handleProgramError = () => {
+        this.videoElement.removeEventListener('error', handleProgramError);
+        this.videoElement.removeEventListener('ended', handleProgramEnd);
+        console.error(`Failed to load program: ${program.id}`);
+        reject(new Error(`Program load failed: ${program.id}`));
+      };
+      
+      const handleProgramEnd = () => {
+        this.videoElement.removeEventListener('error', handleProgramError);
+        this.videoElement.removeEventListener('ended', handleProgramEnd);
         this.videoElement.style.transition = 'opacity 1s ease-out';
         this.videoElement.style.opacity = '0';
         
@@ -139,17 +159,26 @@ export class PlaybackEngine {
         }, 1000);
       };
       
-      this.videoElement.play().catch(console.error);
+      this.videoElement.addEventListener('error', handleProgramError);
+      this.videoElement.addEventListener('ended', handleProgramEnd);
+      
+      try {
+        this.videoElement.src = URL.createObjectURL(program.videoFile);
+        this.videoElement.play().catch(error => {
+          console.error('Program play failed:', error);
+          reject(error);
+        });
+      } catch (error) {
+        console.error('Program setup failed:', error);
+        reject(error);
+      }
     });
   }
 
-
   private async showLogo(logo: Logo): Promise<void> {
-    return new Promise((resolve) => {
-      // Hide video element during logo display
+    return new Promise((resolve, reject) => {
       this.videoElement.style.display = 'none';
       
-      // Create temporary image element for logo display
       const logoImg = document.createElement('img');
       logoImg.src = URL.createObjectURL(logo.imageFile);
       logoImg.style.position = 'fixed';
@@ -163,6 +192,17 @@ export class PlaybackEngine {
       logoImg.style.transition = 'opacity 1s ease-in';
       
       document.body.appendChild(logoImg);
+      
+      // Add error handling for logo loading
+      const handleLogoError = () => {
+        logoImg.removeEventListener('error', handleLogoError);
+        console.error(`Failed to load logo: ${logo.id}`);
+        document.body.removeChild(logoImg);
+        URL.revokeObjectURL(logoImg.src);
+        reject(new Error(`Logo load failed: ${logo.id}`));
+      };
+      
+      logoImg.addEventListener('error', handleLogoError);
       
       // Fade in
       setTimeout(() => {
@@ -179,7 +219,7 @@ export class PlaybackEngine {
           URL.revokeObjectURL(logoImg.src);
           resolve();
         }, 1000);
-      }, 4000); // Show for 4 seconds, then 1 second fade out
+      }, 4000);
     });
   }
 
@@ -189,49 +229,244 @@ export class PlaybackEngine {
     }
     const randomIndex = Math.floor(Math.random() * deck.length);
     const item = deck[randomIndex];
-    deck.splice(randomIndex, 1); // Remove from deck
+    deck.splice(randomIndex, 1);
     return item;
   }
 
-  // Force play methods - FIXED VERSION
+  private async executeCycle(): Promise<void> {
+    try {
+      const program = this.drawFromDeck(this.currentProgramsDeck, () => {
+        if (this.autoRestart) {
+          this.currentProgramsDeck = [...this.programs];
+          return this.drawFromDeck(this.currentProgramsDeck);
+        } else {
+          this.stopPlayback();
+          this.showDoneScreen();
+          return undefined;
+        }
+      });
+      
+      const bumper = this.drawFromDeck(this.currentBumpersDeck, () => {
+        this.currentBumpersDeck = [...this.bumpers];
+        return this.drawFromDeck(this.currentBumpersDeck);
+      });
+      
+      const bumperAudio = this.drawFromDeck(this.currentBumperAudiosDeck, () => {
+        this.currentBumperAudiosDeck = [...this.bumperAudios];
+        return this.drawFromDeck(this.currentBumperAudiosDeck);
+      });
+      
+      const logo = this.drawFromDeck(this.currentLogosDeck, () => {
+        this.currentLogosDeck = [...this.logos];
+        return this.drawFromDeck(this.currentLogosDeck);
+      });
+
+      if (!program) {
+        return;
+      }
+
+      // Try to play program with error recovery
+      try {
+        if (program) {
+          await this.playProgram(program);
+        }
+      } catch (error) {
+        console.error('Program playback failed, continuing cycle:', error);
+        // Continue with the cycle even if program fails
+      }
+
+      // Try to play bumper with error recovery
+      try {
+        if (bumper && bumperAudio) {
+          await this.playBumper(bumper, bumperAudio);
+        }
+      } catch (error) {
+        console.error('Bumper playback failed, continuing cycle:', error);
+        // Continue with the cycle even if bumper fails
+      }
+
+      // Try to show logo with error recovery
+      try {
+        if (logo) {
+          await this.showLogo(logo);
+        }
+      } catch (error) {
+        console.error('Logo display failed, continuing cycle:', error);
+        // Continue with the cycle even if logo fails
+      }
+    } catch (error) {
+      console.error('Cycle execution failed:', error);
+      // Don't rethrow - let the cycle continue
+    }
+  }
+
+  private async playBumper(bumper: Bumper, bumperAudio: BumperAudio): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.videoElement.style.transform = 'translate(-50%, -50%) scale(1)';
+      this.videoElement.style.display = 'block';
+      this.videoElement.style.opacity = '0';
+      this.videoElement.loop = true;
+      
+      // Add error handling for bumper video
+      const handleBumperError = () => {
+        cleanup();
+        reject(new Error(`Bumper video load failed: ${bumper.id}`));
+      };
+      
+      const handleBumperAudioError = () => {
+        cleanup();
+        reject(new Error(`Bumper audio load failed: ${bumperAudio.id}`));
+      };
+      
+      const cleanup = () => {
+        this.videoElement.removeEventListener('error', handleBumperError);
+        this.audioElement.removeEventListener('error', handleBumperAudioError);
+        this.videoElement.pause();
+        this.audioElement.pause();
+        this.videoElement.src = '';
+        this.audioElement.src = '';
+      };
+      
+      this.videoElement.addEventListener('error', handleBumperError);
+      this.audioElement.addEventListener('error', handleBumperAudioError);
+      
+      // Fade in bumper
+      setTimeout(() => {
+        this.videoElement.style.transition = 'opacity 1s ease-in';
+        this.videoElement.style.opacity = '1';
+      }, 50);
+      
+      try {
+        this.videoElement.src = URL.createObjectURL(bumper.videoFile);
+        this.audioElement.src = URL.createObjectURL(bumperAudio.audioFile);
+        this.audioElement.loop = true;
+        
+        Promise.all([
+          this.videoElement.play(),
+          this.audioElement.play()
+        ]).catch(error => {
+          console.error('Bumper play failed:', error);
+          reject(error);
+        });
+      } catch (error) {
+        console.error('Bumper setup failed:', error);
+        reject(error);
+      }
+      
+      // Play for exactly 10 seconds then fade out
+      setTimeout(() => {
+        cleanup();
+        this.videoElement.loop = false;
+        this.audioElement.loop = false;
+        
+        this.videoElement.style.transition = 'opacity 1s ease-out';
+        this.videoElement.style.opacity = '0';
+        this.audioElement.style.transition = 'opacity 1s ease-out';
+        this.audioElement.volume = 0;
+        
+        setTimeout(() => {
+          this.videoElement.pause();
+          this.audioElement.pause();
+          this.videoElement.style.transition = '';
+          this.audioElement.volume = 1;
+          this.audioElement.style.transition = '';
+          this.audioElement.src = '';
+          resolve();
+        }, 1000);
+      }, 10000);
+    });
+  }
+
+  // Force play methods with error handling
   async forcePlayProgram(program: Program) {
-    // Stop current playback
     this.isPlaying = false;
     this.videoElement.pause();
     this.audioElement.pause();
     
-    // Wait for current cycle to complete if running
     if (this.currentCyclePromise) {
       await this.currentCyclePromise;
     }
     
-    // Clear current decks and play just this program
     this.currentProgramsDeck = [program];
     this.currentBumpersDeck = [...this.bumpers];
     this.currentLogosDeck = [...this.logos];
     
-    // Play the program directly without the full cycle
-    await this.playProgram(program);
+    try {
+      await this.playProgram(program);
+    } catch (error) {
+      console.error('Force play program failed:', error);
+      // Don't throw - let the caller handle it
+    }
   }
 
-
-
   async forcePlayLogo(logo: Logo) {
-    // Stop current playback
     this.isPlaying = false;
     this.videoElement.pause();
     this.audioElement.pause();
     
-    // Wait for current cycle to complete if running
     if (this.currentCyclePromise) {
       await this.currentCyclePromise;
     }
     
-    // Play the logo directly
-    await this.showLogo(logo);
+    try {
+      await this.showLogo(logo);
+    } catch (error) {
+      console.error('Force play logo failed:', error);
+      // Don't throw - let the caller handle it
+    }
   }
 
+  async forcePlayBumper(bumper: Bumper) {
+    if (this.bumperAudios.length === 0) {
+      alert('No bumper audio available');
+      return;
+    }
+    
+    const randomAudioIndex = Math.floor(Math.random() * this.bumperAudios.length);
+    const bumperAudio = this.bumperAudios[randomAudioIndex];
+    
+    this.isPlaying = false;
+    this.videoElement.pause();
+    this.audioElement.pause();
+    
+    if (this.currentCyclePromise) {
+      await this.currentCyclePromise;
+    }
+    
+    try {
+      await this.playBumper(bumper, bumperAudio);
+    } catch (error) {
+      console.error('Force play bumper failed:', error);
+      // Don't throw - let the caller handle it
+    }
+  }
 
+  async forcePlayBumperAudio(bumperAudio: BumperAudio) {
+    if (this.bumpers.length === 0) {
+      alert('No bumper video available');
+      return;
+    }
+    
+    const randomBumperIndex = Math.floor(Math.random() * this.bumpers.length);
+    const bumper = this.bumpers[randomBumperIndex];
+    
+    this.isPlaying = false;
+    this.videoElement.pause();
+    this.audioElement.pause();
+    
+    if (this.currentCyclePromise) {
+      await this.currentCyclePromise;
+    }
+    
+    try {
+      await this.playBumper(bumper, bumperAudio);
+    } catch (error) {
+      console.error('Force play bumper audio failed:', error);
+      // Don't throw - let the caller handle it
+    }
+  }
+
+  // Rest of the methods remain the same...
   private setupScale() {
     this.videoElement.style.position = 'fixed';
     this.videoElement.style.top = '50%';
@@ -250,20 +485,15 @@ export class PlaybackEngine {
     const newScale = Math.max(0.1, Math.min(3, this.scale + delta));
     
     this.scale = newScale;
-    
-    // Apply transform with center scaling
     this.videoElement.style.transform = `translate(-50%, -50%) scale(${this.scale})`;
-    
-    // Save scale for current program
     this.saveCurrentPosition();
   }
 
   private saveCurrentPosition() {
     const currentProgram = this.getCurrentProgram();
-    
     if (currentProgram) {
       this.positions.set(currentProgram.id, {
-        x: 0, // No longer tracking position, just scale
+        x: 0,
         y: 0,
         scale: this.scale
       });
@@ -275,15 +505,14 @@ export class PlaybackEngine {
       programs: this.programs,
       bumpers: this.bumpers,
       logos: this.logos,
-      positions: Object.fromEntries(this.positions), // Convert Map to object for JSON
-      autoRestart: this.autoRestart // Include auto restart setting
+      positions: Object.fromEntries(this.positions),
+      autoRestart: this.autoRestart
     };
   }
 
   private getCurrentProgram(): Program | undefined {
     return this.currentProgram;
   }
-
 
   getPositions(): Map<string, { x: number; y: number; scale: number }> {
     return this.positions;
@@ -296,7 +525,6 @@ export class PlaybackEngine {
       this.videoElement.pause();
     }
     
-    // Also pause/resume bumper audio if playing
     if (!this.audioElement.paused && this.audioElement.src) {
       this.audioElement.pause();
     } else if (this.audioElement.paused && this.audioElement.src) {
@@ -307,9 +535,7 @@ export class PlaybackEngine {
   skipToNextProgram() {
     if (!this.isPlaying) return;
     
-    // If we're in the middle of a cycle, skip to the next one
     if (this.currentCyclePromise) {
-      // This will trigger the current program to end and move to the next cycle
       this.videoElement.currentTime = this.videoElement.duration;
     }
   }
@@ -320,14 +546,10 @@ export class PlaybackEngine {
     const newTime = this.videoElement.currentTime + seconds;
     this.videoElement.currentTime = Math.min(newTime, this.videoElement.duration);
     
-    // If we're at the end, skip to next program
     if (this.videoElement.currentTime >= this.videoElement.duration) {
       this.skipToNextProgram();
     }
   }
-
-
-  ///////////////////////////////////////////////////
 
   clearAll() {
     this.programs = [];
@@ -342,12 +564,9 @@ export class PlaybackEngine {
     this.stopPlayback();
   }
 
-  // ... (other existing methods remain the same)
-
   startPlayback() {
     if (this.isPlaying) return;
     
-    // Updated check: need at least one bumper, one bumper audio, and one logo
     if (this.bumpers.length === 0 || this.bumperAudios.length === 0 || this.logos.length === 0) {
       alert('Cannot start playback: Need at least one bumper, one bumper audio, and one logo');
       return;
@@ -356,7 +575,6 @@ export class PlaybackEngine {
     this.removeDoneScreen();
     this.hideUI();
     
-    // Initialize all decks
     this.currentProgramsDeck = [...this.programs];
     this.currentBumpersDeck = [...this.bumpers];
     this.currentBumperAudiosDeck = [...this.bumperAudios];
@@ -366,145 +584,6 @@ export class PlaybackEngine {
     this.playNextCycle();
   }
 
-  private async executeCycle(): Promise<void> {
-    // Draw from all decks
-    const program = this.drawFromDeck(this.currentProgramsDeck, () => {
-      if (this.autoRestart) {
-        this.currentProgramsDeck = [...this.programs];
-        return this.drawFromDeck(this.currentProgramsDeck);
-      } else {
-        this.stopPlayback();
-        this.showDoneScreen();
-        return undefined;
-      }
-    });
-    
-    const bumper = this.drawFromDeck(this.currentBumpersDeck, () => {
-      this.currentBumpersDeck = [...this.bumpers];
-      return this.drawFromDeck(this.currentBumpersDeck);
-    });
-    
-    const bumperAudio = this.drawFromDeck(this.currentBumperAudiosDeck, () => {
-      this.currentBumperAudiosDeck = [...this.bumperAudios];
-      return this.drawFromDeck(this.currentBumperAudiosDeck);
-    });
-    
-    const logo = this.drawFromDeck(this.currentLogosDeck, () => {
-      this.currentLogosDeck = [...this.logos];
-      return this.drawFromDeck(this.currentLogosDeck);
-    });
-
-    if (!program) {
-      return;
-    }
-
-    if (program) {
-      await this.playProgram(program);
-    }
-    
-    if (bumper && bumperAudio) {
-      await this.playBumper(bumper, bumperAudio);
-    }
-    
-    if (logo) {
-      await this.showLogo(logo);
-    }
-  }
-
-  private async playBumper(bumper: Bumper, bumperAudio: BumperAudio): Promise<void> {
-    return new Promise((resolve) => {
-      // Reset to default scale for bumpers
-      this.videoElement.style.transform = 'translate(-50%, -50%) scale(1)';
-      
-      this.videoElement.style.display = 'block';
-      this.videoElement.style.opacity = '0';
-      this.videoElement.src = URL.createObjectURL(bumper.videoFile);
-      this.videoElement.loop = true;
-      
-      // Fade in bumper
-      setTimeout(() => {
-        this.videoElement.style.transition = 'opacity 1s ease-in';
-        this.videoElement.style.opacity = '1';
-      }, 50);
-      
-      // Play bumper audio
-      this.audioElement.src = URL.createObjectURL(bumperAudio.audioFile);
-      this.audioElement.loop = true;
-      this.audioElement.play().catch(console.error);
-      
-      // Play for exactly 10 seconds then fade out
-      setTimeout(() => {
-        this.videoElement.loop = false;
-        this.audioElement.loop = false;
-        
-        // Add fade out effect
-        this.videoElement.style.transition = 'opacity 1s ease-out';
-        this.videoElement.style.opacity = '0';
-        this.audioElement.style.transition = 'opacity 1s ease-out';
-        this.audioElement.volume = 0;
-        
-        setTimeout(() => {
-          this.videoElement.pause();
-          this.audioElement.pause();
-          this.videoElement.style.transition = '';
-          this.audioElement.volume = 1;
-          this.audioElement.style.transition = '';
-          this.audioElement.src = '';
-          resolve();
-        }, 1000);
-        
-      }, 10000);
-      
-      this.videoElement.play().catch(console.error);
-    });
-  }
-
-  // Updated force play methods
-  async forcePlayBumper(bumper: Bumper) {
-    // For force play, we need to pick a random bumper audio
-    if (this.bumperAudios.length === 0) {
-      alert('No bumper audio available');
-      return;
-    }
-    
-    const randomAudioIndex = Math.floor(Math.random() * this.bumperAudios.length);
-    const bumperAudio = this.bumperAudios[randomAudioIndex];
-    
-    // Stop current playback
-    this.isPlaying = false;
-    this.videoElement.pause();
-    this.audioElement.pause();
-    
-    if (this.currentCyclePromise) {
-      await this.currentCyclePromise;
-    }
-    
-    await this.playBumper(bumper, bumperAudio);
-  }
-
-  async forcePlayBumperAudio(bumperAudio: BumperAudio) {
-    // For force play, we need to pick a random bumper video
-    if (this.bumpers.length === 0) {
-      alert('No bumper video available');
-      return;
-    }
-    
-    const randomBumperIndex = Math.floor(Math.random() * this.bumpers.length);
-    const bumper = this.bumpers[randomBumperIndex];
-    
-    // Stop current playback
-    this.isPlaying = false;
-    this.videoElement.pause();
-    this.audioElement.pause();
-    
-    if (this.currentCyclePromise) {
-      await this.currentCyclePromise;
-    }
-    
-    await this.playBumper(bumper, bumperAudio);
-  }
-
-  // Methods to add media to decks
   addProgram(program: Program) {
     this.programs.push(program);
     if (!this.positions.has(program.id)) {
@@ -524,7 +603,6 @@ export class PlaybackEngine {
     this.logos.push(logo);
   }
 
-  // Updated getter methods
   getPrograms(): Program[] {
     return this.programs;
   }
