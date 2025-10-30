@@ -7,8 +7,13 @@ export interface Program {
 export interface Bumper {
   id: string;
   videoFile: File;
-  audioFile?: File;
+    audioFile?: File;
   loopDuration?: number;
+}
+
+export interface BumperAudio {
+  id: string;
+  audioFile: File;
 }
 
 export interface Logo {
@@ -20,6 +25,7 @@ export interface Logo {
 export interface PlaybackState {
   currentProgram?: Program;
   currentBumper?: Bumper;
+  currentBumperAudio?: BumperAudio;
   currentLogo?: Logo;
   isPlaying: boolean;
   isDashboardVisible: boolean;

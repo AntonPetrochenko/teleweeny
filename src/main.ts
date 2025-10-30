@@ -23,10 +23,12 @@ document.body.appendChild(dashboard);
 function toggleListWindows(show: boolean) {
   const programsList = document.getElementById('programs-list');
   const bumpersList = document.getElementById('bumpers-list');
+  const bumperAudiosList = document.getElementById('bumper-audios-list');
   const logosList = document.getElementById('logos-list');
   
   if (programsList) programsList.style.display = show ? 'block' : 'none';
   if (bumpersList) bumpersList.style.display = show ? 'block' : 'none';
+  if (bumperAudiosList) bumperAudiosList.style.display = show ? 'block' : 'none';
   if (logosList) logosList.style.display = show ? 'block' : 'none';
 }
 
