@@ -151,7 +151,15 @@ function addLogo(playbackEngine: PlaybackEngine) {
 export function createDashboard() {
   const dashboard = document.createElement('div');
   dashboard.id = 'dashboard';
-  // ... (styling remains the same)
+  dashboard.style.position = 'fixed';
+  dashboard.style.top = '50px';
+  dashboard.style.left = '50px';
+  dashboard.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+  dashboard.style.color = 'white';
+  dashboard.style.padding = '20px';
+  dashboard.style.borderRadius = '10px';
+  dashboard.style.zIndex = '1000';
+  dashboard.style.cursor = 'move';
 
   dashboard.innerHTML = `
     <h3>Halloweeny Control Panel</h3>

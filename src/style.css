@@ -49,17 +49,12 @@ table {
 
 
 
-
-
-
-
-
-
 body {
   margin: 0;
   padding: 0;
   overflow: hidden;
   background: black;
+  font-family: sans-serif;
 }
 
 #main-video {
